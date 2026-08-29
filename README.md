@@ -82,7 +82,7 @@ O modo `infer` abre um loop de chat no terminal: escreva a sua mensagem e o mode
 
 O projeto foi concebido para CPU com 24 GB de RAM; o treino demora cerca de 3–5 minutos por época na configuração recomendada.
 
-## 📈 Objectivos de Estudo
+## 📈 Objetivos de Estudo
 
 - MoE vs. Denso para o mesmo custo computacional.
 - Eficácia do prefetch por requisição (roteamento estático vs. dinâmico).
