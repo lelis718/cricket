@@ -1,0 +1,15 @@
+# Ignora tudo por omissão
+*
+
+# --- Mantém apenas estes ficheiros ---
+!.gitignore
+!cricket.py
+!cricket-explicado.md
+!arquitetura.md
+!README.md
+!cricket.png
+
+# --- Para incluir novos ficheiros/pastas, descomente e adapte ---
+# !outra_pasta/
+# !outra_pasta/**
+# !novo_ficheiro.txt
