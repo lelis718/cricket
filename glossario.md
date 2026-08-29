@@ -161,6 +161,11 @@ Mecanismo que decide "quanto passa". No SwiGLU, a projeção `w1` com SiLU faz o
 papel de portão por dimensão; no MoE, o *gate token-a-token* pontua os experts
 para cada token.
 
+**Gather (recolher)**
+Operação de indexação avançada que "apanha" elementos/tokens indicados por
+índices. No MoE, `x[idx]` recolhe só os tokens que usam um dado expert para
+passá-los em lote pelo expert.
+
 **GQA — Grouped Query Attention**
 Atenção em que o número de heads de Key/Value (`num_kv_heads`) é menor que o de
 heads de Query (`num_heads`). Cada head de KV é repetido para servir um grupo de
@@ -196,6 +201,11 @@ Dimensão do vetor que representa cada token (128 no Cricket).
 ---
 
 ## I
+
+**Indexação avançada (advanced indexing)**
+Selecionar partes de um tensor com índices/máscaras em vez de slicing simples.
+Ver **Gather** e **Scatter-add**; usada no forward dos experts do MoE para
+recolher e devolver tokens (ex.: `x[idx]`, `final_out[idx] += ...`).
 
 **Inferência**
 Uso do modelo treinado para gerar texto (modo `infer`, loop de chat).
@@ -346,6 +356,12 @@ Decisão de qual expert processa cada token (token-a-token) e quais ficam candid
 
 ## S
 
+**Scatter-add (espalhar somando)**
+Espalhar resultados de volta nas posições de onde foram recolhidos, somando ao
+que já lá está. No MoE, `final_out[idx] += weight_e[idx].unsqueeze(-1) * out`
+devolve a saída de cada expert (ponderada) à posição original, acumulando a
+contribuição de todos os experts.
+
 **Seed (semente)**
 Valor fixado (`seed = 42`) para tornar a execução reproduzível: mesmos números
 aleatórios, mesmos resultados.
@@ -420,6 +436,11 @@ Corte de sequências acima de `max_seq_len` (64 tokens no Cricket).
 **Validação**
 Conjunto de 20% dos textos (nunca vistos durante o treino) usado para medir
 generalização e decidir *early stopping*.
+
+**Vetorização**
+Substituir loops sobre elementos por operações sobre tensores inteiros (mais
+rápidas e padronizadas). Ex.: a combinação dos experts do MoE usa máscara ×
+pesos + gather/scatter-add em vez de um loop token a token.
 
 **Value (V)**
 Em atenção: "conteúdo" entregue pelo token se for escolhido. Gerado por `wv`.

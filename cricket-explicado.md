@@ -521,22 +521,54 @@ top_k_weights, top_k_indices = torch.topk(masked_scores, k=1, dim=-1)
 top_k_weights = torch.softmax(top_k_weights, dim=-1)   # nesta config: sempre 1.0
 ```
 
-Finalmente, os experts escolhidos são chamados — num loop explícito (didáctico):
+Finalmente, os experts escolhidos são chamados e as suas saídas são combinadas
+de forma *vetorizada* (pequeno loop apenas por expert, sem loop token a token):
 
 ```python
 final_out = torch.zeros_like(x)
 for e in range(self.num_experts):
-    mask = (top_k_indices == e).any(dim=-1)       # quais tokens usarão o expert e
-    if not mask.any():
+    # weight_e: (B, T) — peso dado ao expert e em cada token.
+    # `(top_k_indices == e).float()` é uma máscara 0/1; ao multiplicá-la pelos
+    # pesos top-k e somar ao longo da dimensão do top-k, obtemos o peso TOTAL
+    # que cada token atribuiu ao expert e (0 se ele não foi escolhido).
+    weight_e = (top_k_weights * (top_k_indices == e).float()).sum(dim=-1)
+
+    selected = weight_e > 0                   # tokens roteados para o expert e
+    if not selected.any():
         continue
-    idx = mask.nonzero(as_tuple=True)             # posições (b, t) desse expert
-    inp = x[idx]                                  # só os tokens desse expert
-    out = self.experts[e](inp)                    # forward do expert
-    for i, (b, t) in enumerate(zip(idx[0], idx[1])):
-        weight = top_k_weights[b, t, <pos>]       # peso do expert p/ esse token
-        final_out[b, t] += weight * out[i]        # e soma na saída
+
+    idx = selected.nonzero(as_tuple=True)     # coordenadas (b, t) desse expert
+    inp = x[idx]                              # só esses tokens:  (N, H)
+    out = self.experts[e](inp)                # forward do expert: (N, H)
+
+    final_out[idx] += weight_e[idx].unsqueeze(-1) * out   # (N,1)*(N,H) → posição original
 return final_out, aux_loss
 ```
+
+Passo a passo desta versão vetorizada:
+
+1. **Peso por token (máscara × pesos).** A informação do top-k é condensada em
+   `weight_e`: `(top_k_indices == e)` vale 1 onde o expert `e` está entre os
+   escolhidos e 0 no resto; multiplicar pelos `top_k_weights` e somar na dimensão
+   do top-k devolve o **peso total** do expert `e` para cada token. Isto também
+   funciona com `top_k > 1` — um token pode repartir os seus pesos por vários
+   experts, e aqui ficam agregados por expert.
+2. **Recolher (gather).** `selected.nonzero(as_tuple=True)` devolve as
+   coordenadas `(b, t)` dos tokens que usam o expert; `x[idx]` recolhe só esses
+   tokens num tensor `(N, H)`. Os índices são **únicos** (o `nonzero` não repete
+   posições), pelo que cada token aparece uma só vez por iteração.
+3. **Correr o expert.** `self.experts[e](inp)` processa N tokens de uma só vez —
+   o mesmo cálculo do loop explícito, mas feito em lote (muito mais rápido).
+4. **Espalhar (scatter-add).** `final_out[idx] += weight_e[idx].unsqueeze(-1) * out`
+   multiplica cada saída pelo peso correspondente (shape `(N, 1)`) e reescreve-a
+   na posição original do tensor `(B, T, H)`. O `+=` **acumula**: nos passos
+   seguintes, outros experts contribuem com os *seus* tokens, somando a sua
+   parcela na mesma posição.
+
+O resultado é **matematicamente idêntico** ao da versão com loop explícito, mas
+com menos um loop aninhado: a combinação ponderada acontece por operações de
+tensor (máscara, gather e scatter-add), que são exactamente as técnicas de
+indexação do PyTorch que valem a pena conhecer.
 
 Ou seja: cada token **só passa pelo expert que escolheu**, e o resultado é
 colocado de volta na sua posição. Como só 1 de 3 experts é activado por token,

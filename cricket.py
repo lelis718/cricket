@@ -16,9 +16,10 @@ arquiteturas de linguagem e permite compará-las no mesmo hardware:
 A secção de cada bloco é referenciada ao longo do código com um
 número (§2.1, §2.3, §3, §4) apontando para a documentação técnica
 em `arquitetura.md`. Esta organização foi pensada para estudo:
-os importantes detalhes do roteamento MoE ficam EXPLICITAMENTE
-escritos num loop simples, em vez de serem escondidos em operações
-tensor eficientes (mas opacas).
+os detalhes do roteamento MoE ficam escritos de forma clara e
+comentada, e a combinação ponderada dos experts usa operações
+vetorizadas de indexação (máscara + gather/scatter-add) para
+ensinar técnicas de tensores do PyTorch.
 
 Uso via linha de comando
 ------------------------
@@ -92,6 +93,7 @@ CONFIG = {
     "num_candidates": 2,       # MoE: nº de experts pré-seleccionados pelo prefetch
     "seed": 42,
     "vocab_size": None,        # <- preenchido dinamicamente após o tokenizador
+    "vocab_size_target": 8000, # Nº de tokens alvo do BPE (só 1ª vez)  
 }
 
 # Caminhos de cache (downloads/treinos da 1.ª execução)
@@ -586,21 +588,27 @@ class MoEWithPrefetch(nn.Module):
         aux_loss = (frac * importance).sum() * self.num_experts
 
         # --- Forward dos experts com combinação ponderada ---
-        # FEITO DE FORMA EXPLÍCITA (loop) por motivos didácticos: mostra
-        # exactamente como cada token soma a contribuição dos seus experts.
+        # VERSÃO VETORIZADA: os pesos são derivados por operações de tensor.
+        # `(top_k_indices == e).float()` é uma máscara 0/1 que selecciona as
+        # posições onde o expert `e` foi escolhido; multiplicá-la pelos pesos
+        # top-k e somar ao longo da dimensão do top-k devolve, para CADA token,
+        # o peso total atribuído ao expert `e` (0 se ele não foi escolhido).
+        # Depois basta recolher esses tokens (gather), correr o expert e
+        # espalhar o resultado ponderado de volta (scatter-add).
         final_out = torch.zeros_like(x)
         for e in range(self.num_experts):
-            mask = (top_k_indices == e).any(dim=-1)
-            if not mask.any():
+            # weight_e: (B, T) — peso do expert e para cada token (0 p/ não escolhidos)
+            weight_e = (top_k_weights * (top_k_indices == e).float()).sum(dim=-1)
+
+            selected = weight_e > 0                     # tokens roteados p/ o expert e
+            if not selected.any():
                 continue
-            idx = mask.nonzero(as_tuple=True)          # tokens roteados p/ expert e
-            inp = x[idx]
-            out = self.experts[e](inp)
-            for i, (b, t) in enumerate(zip(idx[0], idx[1])):
-                pos = (top_k_indices[b, t] == e).nonzero(as_tuple=True)[0]
-                if len(pos) > 0:
-                    weight = top_k_weights[b, t, pos[0]]
-                    final_out[b, t] += weight * out[i]
+
+            idx = selected.nonzero(as_tuple=True)       # coordenadas (b, t) desse expert
+            inp = x[idx]                                 # só esses tokens:  (N, H)
+            out = self.experts[e](inp)                   # forward do expert: (N, H)
+
+            final_out[idx] += weight_e[idx].unsqueeze(-1) * out   # (N,1)*(N,H) → posição original
 
         return final_out, aux_loss
 
@@ -966,7 +974,7 @@ def main(argv=None):
 
     tokenizer = BPETokenizer(
         texts if texts is not None else [],
-        vocab_size=4000,
+        vocab_size=CONFIG["vocab_size_target"],
         max_len=CONFIG["max_seq_len"],
         cache_path=TOKENIZER_CACHE,
     )
